@@ -1,7 +1,10 @@
-flask==2.0.1
+Flask==2.0.1
+Werkzeug==2.0.1
 gunicorn==20.1.0
 requests==2.31.0
 beautifulsoup4==4.12.2
-sqlalchemy==2.0.1
+lxml==4.9.3
+SQLAlchemy==2.0.7
 pg8000==1.29.4
-cloud-sql-python-connector[pg8000]==1.2.0
+cloud-sql-python-connector[pg8000]==1.2.3
+google-auth==2.16.2
