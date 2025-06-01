@@ -1,8 +1,8 @@
 """
-Interest.co.nz Mortgage Rate Scraper with Enhanced Database Logging
+Interest.co.nz Mortgage Rate Scraper with Enhanced Parsing Logic
 
 This script scrapes mortgage rates from interest.co.nz and updates a database.
-It includes comprehensive error logging for database operations.
+It includes improved parsing logic to handle the current website structure.
 """
 
 import os
@@ -23,9 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Constants
 URL = "https://www.interest.co.nz/borrowing"
-RATE_TABLE_ID = "interest_financial_datatable"
 
-# Bank name mapping
+# Bank name mapping - expanded to handle variations in names
 BANK_MAPPING = {
     "ANZ": "ANZ",
     "ASB": "ASB",
@@ -34,13 +33,17 @@ BANK_MAPPING = {
     "Westpac": "Westpac",
     "Co-operative Bank": "Co-operative Bank",
     "SBS Bank": "SBS Bank",
+    "SBS": "SBS Bank",
+    "TSB Bank": "TSB",
     "TSB": "TSB",
-    "HSBC": "HSBC"
+    "HSBC": "HSBC",
+    "Heartland Bank": "Heartland Bank"
 }
 
 # Tenor mapping
 TENOR_MAPPING = {
     "Variable floating": {"name": "Floating", "months": 1},
+    "floating": {"name": "Floating", "months": 1},
     "6 months": {"name": "6 months", "months": 6},
     "1 year": {"name": "1 year", "months": 12},
     "18 months": {"name": "18 months", "months": 18},
@@ -110,85 +113,153 @@ def fetch_data():
         logger.error(f"Error fetching data: {e}")
         return None
 
+def extract_bank_name(row):
+    """Extract bank name from a table row."""
+    # Try to find bank name in image alt or title attributes
+    img = row.find('img')
+    if img:
+        if img.get('alt'):
+            return img.get('alt')
+        if img.get('title'):
+            return img.get('title')
+    
+    # Try to find bank name in text content of first cell
+    first_cell = row.find('td')
+    if first_cell and first_cell.get_text().strip():
+        return first_cell.get_text().strip()
+    
+    # Try to find bank name in any cell with class 'inst-name'
+    inst_name_cell = row.find('td', class_='inst-name')
+    if inst_name_cell and inst_name_cell.get_text().strip():
+        return inst_name_cell.get_text().strip()
+    
+    return None
+
+def normalize_bank_name(raw_name):
+    """Normalize bank name to match database entries."""
+    if not raw_name:
+        return None
+    
+    # Clean up the raw name
+    name = raw_name.strip()
+    
+    # Remove common prefixes/suffixes
+    prefixes = ["click to contact ", "click here to contact "]
+    for prefix in prefixes:
+        if name.lower().startswith(prefix):
+            name = name[len(prefix):]
+    
+    suffixes = [" Home Loans %u2013 Apply now or find out more", " - creating futures."]
+    for suffix in suffixes:
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+    
+    # Map to standard bank name
+    return BANK_MAPPING.get(name, name)
+
+def extract_rate(cell_text):
+    """Extract numeric rate from cell text."""
+    if not cell_text:
+        return None
+    
+    # Find numeric rate pattern (e.g., 5.99)
+    rate_match = re.search(r'(\d+\.\d+)', cell_text)
+    if rate_match:
+        try:
+            return float(rate_match.group(1))
+        except ValueError:
+            return None
+    
+    return None
+
+def extract_special_18month_rate(row):
+    """Extract 18-month rate from special format."""
+    for cell in row.find_all('td'):
+        text = cell.get_text().strip()
+        if "18 months =" in text:
+            rate_match = re.search(r'18 months = (\d+\.\d+)', text)
+            if rate_match:
+                try:
+                    return float(rate_match.group(1))
+                except ValueError:
+                    return None
+    return None
+
 def parse_rates(html_content):
-    """Parse mortgage rates from HTML content."""
+    """Parse mortgage rates from HTML content with improved handling of the current website structure."""
     rates = []
     
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Find the mortgage rates table
-        table = soup.find('table', id=RATE_TABLE_ID)
-        if not table:
-            logger.error(f"Could not find table with ID: {RATE_TABLE_ID}")
-            # Try to find any table as a fallback
-            tables = soup.find_all('table')
-            logger.info(f"Found {len(tables)} tables on the page")
-            if tables:
-                table = tables[0]
-                logger.info("Using first table as fallback")
-            else:
-                return rates
+        # Find all tables on the page
+        tables = soup.find_all('table')
+        logger.info(f"Found {len(tables)} tables on the page")
         
-        # Process each row in the table
-        rows = table.find_all('tr')
         current_bank = None
         
-        for row in rows:
-            # Check if this is a bank header row
-            bank_img = row.find('img')
-            if bank_img and bank_img.get('title'):
-                bank_name = bank_img.get('title')
-                # Map to standard bank name
-                current_bank = BANK_MAPPING.get(bank_name, bank_name)
-                logger.info(f"Found bank: {current_bank}")
+        # Process each table
+        for table_idx, table in enumerate(tables):
+            # Skip tables that don't look like rate tables
+            if not table.find('th') and not table.find('td', class_='inst-name'):
                 continue
             
-            # Skip rows without a bank
-            if not current_bank:
-                continue
+            logger.info(f"Processing table {table_idx}")
             
-            # Extract rates from the row
-            cells = row.find_all('td')
-            if len(cells) >= 2:
-                tenor_cell = cells[0].get_text().strip()
+            # Process each row in the table
+            rows = table.find_all('tr')
+            for row in rows:
+                # Check if this is a bank header row
+                bank_name = extract_bank_name(row)
+                if bank_name:
+                    normalized_bank = normalize_bank_name(bank_name)
+                    if normalized_bank:
+                        current_bank = normalized_bank
+                        logger.info(f"Found bank: {current_bank}")
                 
-                # Handle special case for 18-month rates which might be in a different format
-                if "18" in tenor_cell and "month" in tenor_cell.lower():
-                    tenor = "18 months"
-                else:
-                    tenor = tenor_cell
-                
-                # Skip rows without a recognized tenor
-                if tenor not in TENOR_MAPPING:
+                # Skip rows without a bank
+                if not current_bank:
                     continue
                 
-                # Extract standard rate
-                standard_rate_cell = cells[1].get_text().strip()
-                standard_rate_match = re.search(r'(\d+\.\d+)', standard_rate_cell)
-                if standard_rate_match:
-                    standard_rate = float(standard_rate_match.group(1))
+                # Extract rates from the row
+                cells = row.find_all('td')
+                if len(cells) < 2:
+                    continue
+                
+                # First cell might contain product type
+                product_type = cells[0].get_text().strip() if cells[0] else ""
+                
+                # Check for special 18-month rate format
+                special_18month_rate = extract_special_18month_rate(row)
+                if special_18month_rate:
                     rates.append({
                         "bank": current_bank,
-                        "tenor": tenor,
-                        "rate_type": "Standard",
-                        "rate": standard_rate
+                        "tenor": "18 months",
+                        "rate_type": "Special" if "Special" in product_type else "Standard",
+                        "rate": special_18month_rate
                     })
-                    logger.info(f"Extracted rate: {current_bank}, {tenor}, Standard, {standard_rate}")
+                    logger.info(f"Extracted 18-month rate: {current_bank}, 18 months, {special_18month_rate}")
                 
-                # Extract special rate if available
-                if len(cells) >= 3:
-                    special_rate_cell = cells[2].get_text().strip()
-                    special_rate_match = re.search(r'(\d+\.\d+)', special_rate_cell)
-                    if special_rate_match:
-                        special_rate = float(special_rate_match.group(1))
-                        rates.append({
-                            "bank": current_bank,
-                            "tenor": tenor,
-                            "rate_type": "Special",
-                            "rate": special_rate
-                        })
-                        logger.info(f"Extracted rate: {current_bank}, {tenor}, Special, {special_rate}")
+                # Process standard tenor columns
+                # Assuming columns follow this pattern: Product, Variable floating, 6 months, 1 year, etc.
+                tenors = ["Variable floating", "6 months", "1 year", "2 years", "3 years", "4 years", "5 years"]
+                
+                # Skip the first cell (product type) and process the rest as potential rates
+                for i, cell in enumerate(cells[1:], 1):
+                    if i <= len(tenors):
+                        tenor = tenors[i-1]
+                        cell_text = cell.get_text().strip()
+                        rate = extract_rate(cell_text)
+                        
+                        if rate:
+                            rate_type = "Special" if "Special" in product_type else "Standard"
+                            rates.append({
+                                "bank": current_bank,
+                                "tenor": tenor,
+                                "rate_type": rate_type,
+                                "rate": rate
+                            })
+                            logger.info(f"Extracted rate: {current_bank}, {tenor}, {rate_type}, {rate}")
     
     except Exception as e:
         logger.error(f"Error parsing rates: {e}")
@@ -257,7 +328,14 @@ def update_database(processed_rates, engine):
             # Update rates
             for rate_data in processed_rates:
                 bank_name = rate_data["bank"]
-                tenor_name = TENOR_MAPPING[rate_data["tenor"]]["name"]
+                
+                # Map tenor name to database tenor name
+                tenor_info = TENOR_MAPPING.get(rate_data["tenor"])
+                if not tenor_info:
+                    logger.warning(f"Tenor '{rate_data['tenor']}' not mapped, skipping")
+                    continue
+                
+                tenor_name = tenor_info["name"]
                 rate_value = rate_data["rate"]
                 rate_type = rate_data["rate_type"]
                 
@@ -330,47 +408,5 @@ def update_database(processed_rates, engine):
         except SQLAlchemyError as e:
             logger.error(f"Database transaction error: {e}")
             logger.error(f"SQLAlchemy error details: {str(e.__dict__)}")
-            logger.error(traceback.format_exc())
-            session.rollback()
-            logger.info("Transaction rolled back")
-        
-        finally:
-            session.close()
-            logger.info("Database session closed")
-    
-    except Exception as e:
-        logger.error(f"Unexpected error during database update: {e}")
-        logger.error(traceback.format_exc())
-    
-    return updated_count
-
-def main():
-    """Main function to scrape and update mortgage rates."""
-    logger.info("Starting mortgage rate scraper")
-    
-    # Fetch data from interest.co.nz
-    html_content = fetch_data()
-    if not html_content:
-        logger.error("Failed to fetch data from interest.co.nz")
-        return
-    
-    # Parse rates from HTML
-    rates = parse_rates(html_content)
-    
-    # Process rates to find lowest per bank/tenor
-    processed_rates = process_rates(rates)
-    
-    # Connect to database
-    logger.info("Connecting to database")
-    engine = get_db_connection()
-    if not engine:
-        logger.error("Failed to connect to database")
-        return
-    
-    # Update database with processed rates
-    updated_count = update_database(processed_rates, engine)
-    
-    logger.info(f"Mortgage rate scraper completed. Updated {updated_count} rates.")
-
-if __name__ == "__main__":
-    main()
+            logger.error(traceback.format_ex
+(Content truncated due to size limit. Use line ranges to read in chunks)
