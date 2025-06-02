@@ -408,5 +408,48 @@ def update_database(processed_rates, engine):
         except SQLAlchemyError as e:
             logger.error(f"Database transaction error: {e}")
             logger.error(f"SQLAlchemy error details: {str(e.__dict__)}")
-            logger.error(traceback.format_ex
-(Content truncated due to size limit. Use line ranges to read in chunks)
+            logger.error(traceback.format_exc())
+            session.rollback()
+            logger.info("Transaction rolled back")
+        
+        finally:
+            session.close()
+            logger.info("Database session closed")
+    
+    except Exception as e:
+        logger.error(f"Unexpected error during database update: {e}")
+        logger.error(traceback.format_exc())
+    
+    return updated_count
+
+def main():
+    """Main function to scrape and update mortgage rates."""
+    logger.info("Starting mortgage rate scraper")
+    
+    # Fetch data from interest.co.nz
+    html_content = fetch_data()
+    if not html_content:
+        logger.error("Failed to fetch data from interest.co.nz")
+        return {"status": "error", "message": "Failed to fetch data"}
+    
+    # Parse rates from HTML
+    rates = parse_rates(html_content)
+    
+    # Process rates to find lowest per bank/tenor
+    processed_rates = process_rates(rates)
+    
+    # Connect to database
+    logger.info("Connecting to database")
+    engine = get_db_connection()
+    if not engine:
+        logger.error("Failed to connect to database")
+        return {"status": "error", "message": "Failed to connect to database"}
+    
+    # Update database with processed rates
+    updated_count = update_database(processed_rates, engine)
+    
+    logger.info(f"Mortgage rate scraper completed. Updated {updated_count} rates.")
+    return {"status": "success", "rates_updated": updated_count}
+
+if __name__ == "__main__":
+    main()
