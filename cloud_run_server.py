@@ -1,3 +1,6 @@
+
+print("Starting cloud_run_server.py")
+
 import os
 from flask import Flask, request
 from interest_scraper import main as scraper_main
