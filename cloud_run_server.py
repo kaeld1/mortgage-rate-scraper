@@ -3,7 +3,14 @@ print("Starting cloud_run_server.py")
 
 import os
 from flask import Flask, request
-from interest_scraper import main as scraper_main
+ from interest_scraper import main as scraper_main
+    print("Successfully imported main from interest_scraper")
+except Exception as e:
+    print(f"Error importing from interest_scraper: {str(e)}")
+    # Fallback to a simple function that just logs
+    def scraper_main():
+        print("Using fallback scraper_main function")
+        return {"status": "error", "message": "Failed to import real scraper"}
 
 app = Flask(__name__)
 
