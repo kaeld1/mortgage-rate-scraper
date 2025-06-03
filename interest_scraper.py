@@ -4,7 +4,8 @@ Interest.co.nz Mortgage Rate Scraper with Enhanced Parsing Logic
 This script scrapes mortgage rates from interest.co.nz and updates a database.
 It includes improved parsing logic to handle the current website structure.
 """
-print("Starting cloud_run_server.py")
+print("interest_scraper.py loaded successfully")
+
 
 import os
 import logging
