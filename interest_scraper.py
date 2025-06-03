@@ -17,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, 
+logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -80,16 +80,39 @@ def get_db_connection():
         # Create connection string
         db_socket_dir = "/cloudsql"
         db_socket_path = f"{db_socket_dir}/{instance_conn_name}"
+        logger.info(f"Using socket path: {db_socket_path}")
         
         # Cloud SQL Proxy connection string
         db_url = f"postgresql+pg8000://{db_user}:{db_pass}@/{db_name}?unix_sock={db_socket_path}/.s.PGSQL.5432"
+        logger.info("Database URL created (password hidden)")
         
         # Create engine
+        logger.info("Creating database engine...")
         engine = create_engine(db_url, pool_size=5, max_overflow=2)
         
         # Test connection
+        logger.info("Testing database connection...")
         with engine.connect() as connection:
             logger.info("Successfully connected to the database!")
+            
+            # Test query to verify schema
+            try:
+                logger.info("Testing query to verify schema...")
+                banks_result = connection.execute(text("SELECT COUNT(*) FROM banks"))
+                bank_count = banks_result.scalar()
+                logger.info(f"Found {bank_count} banks in database")
+                
+                tenors_result = connection.execute(text("SELECT COUNT(*) FROM tenors"))
+                tenor_count = tenors_result.scalar()
+                logger.info(f"Found {tenor_count} tenors in database")
+                
+                rates_result = connection.execute(text("SELECT COUNT(*) FROM bank_rates"))
+                rates_count = rates_result.scalar()
+                logger.info(f"Found {rates_count} existing rates in database")
+            except Exception as e:
+                logger.error(f"Schema verification failed: {e}")
+                logger.error(traceback.format_exc())
+            
             return engine
             
     except SQLAlchemyError as e:
@@ -238,7 +261,7 @@ def parse_rates(html_content):
                         "rate_type": "Special" if "Special" in product_type else "Standard",
                         "rate": special_18month_rate
                     })
-                    logger.info(f"Extracted 18-month rate: {current_bank}, 18 months, {special_18month_rate}")
+                    logger.info(f"Extracted rate: {current_bank}, 18 months, {'Special' if 'Special' in product_type else 'Standard'}, {special_18month_rate}")
                 
                 # Process standard tenor columns
                 # Assuming columns follow this pattern: Product, Variable floating, 6 months, 1 year, etc.
@@ -307,6 +330,7 @@ def update_database(processed_rates, engine):
     
     try:
         # Create a session
+        logger.info("Creating database session")
         Session = sessionmaker(bind=engine)
         session = Session()
         
@@ -326,6 +350,7 @@ def update_database(processed_rates, engine):
             logger.info(f"Found {len(tenors)} tenors in database: {list(tenors.keys())}")
             
             # Update rates
+            logger.info(f"Processing {len(processed_rates)} rates for database update")
             for rate_data in processed_rates:
                 bank_name = rate_data["bank"]
                 
@@ -353,6 +378,7 @@ def update_database(processed_rates, engine):
                 
                 try:
                     # Check if rate exists
+                    logger.info(f"Checking if rate exists: {bank_name}, {tenor_name}, {rate_type}")
                     check_query = text("""
                         SELECT id FROM bank_rates 
                         WHERE bank_id = :bank_id AND tenor_id = :tenor_id AND rate_type = :rate_type
@@ -398,6 +424,7 @@ def update_database(processed_rates, engine):
                 
                 except SQLAlchemyError as e:
                     logger.error(f"Error updating rate for {bank_name}, {tenor_name}, {rate_type}: {e}")
+                    logger.error(f"SQL error details: {str(e.__dict__)}")
                     logger.error(traceback.format_exc())
             
             # Commit the transaction
@@ -434,19 +461,24 @@ def main():
     
     # Parse rates from HTML
     rates = parse_rates(html_content)
+    logger.info(f"Parsed {len(rates)} rates from HTML")
     
     # Process rates to find lowest per bank/tenor
     processed_rates = process_rates(rates)
+    logger.info(f"Processed into {len(processed_rates)} unique bank/tenor combinations")
     
-    # Connect to database
+    # Connect to database - THIS IS THE CRITICAL PART
     logger.info("Connecting to database")
     engine = get_db_connection()
+    
     if not engine:
         logger.error("Failed to connect to database")
         return {"status": "error", "message": "Failed to connect to database"}
     
     # Update database with processed rates
+    logger.info("Updating database with processed rates")
     updated_count = update_database(processed_rates, engine)
+    logger.info(f"Database update complete. Updated {updated_count} rates.")
     
     logger.info(f"Mortgage rate scraper completed. Updated {updated_count} rates.")
     return {"status": "success", "rates_updated": updated_count}
